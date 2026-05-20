@@ -170,7 +170,7 @@ if __name__ == "__main__":
     # Ingest documents from the documents folder.
     # Uncomment when (re)ingesting; ingestion is idempotent (deterministic IDs).
     docs_dir = "./documents"
-    pdf_files = [f"./${docs_dir}/{f}" for f in os.listdir(docs_dir) if f.endswith(".pdf")]
+    pdf_files = [f"{docs_dir}/{f}" for f in os.listdir(docs_dir) if f.endswith(".pdf")]
     bot.ingest_pdfs(pdf_files)
 
     # test_case = "ร่างคดี: นาย ก. ถูกเลิกจ้างโดยไม่เป็นธรรมเนื่องจากบริษัทอ้างว่าผลงานไม่ถึงเกณฑ์ แต่นาย ก. มีหลักฐานการประเมินย้อนหลัง 3 ปีที่อยู่ในระดับดีมาก และไม่เคยได้รับคำเตือนเป็นลายลักษณ์อักษร"
