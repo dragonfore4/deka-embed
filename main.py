@@ -8,8 +8,10 @@ See AGENTS.md for setup, gotchas, and DB-reset commands.
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 from dotenv import load_dotenv
+import psycopg
 
 # PyMuPDF (fitz) is used because pypdf garbles Thai PDFs from this corpus:
 # the embedded font's tone-mark glyphs come back as null bytes, e.g.
@@ -43,6 +45,34 @@ SPLITTER = RecursiveCharacterTextSplitter(
     chunk_overlap=200,
     separators=["\n\n", "\n", " ", ""],
 )
+
+
+def _existing_case_ids(connection: str | None, collection_name: str) -> set[str]:
+    """Return case_ids already embedded in `collection_name`.
+
+    Used by ingest_pdfs(skip_existing=True) to skip files that are already in
+    the vector store (resume after a crash / incremental adds). Returns an empty
+    set if there is no connection string or the langchain tables don't exist yet.
+
+    psycopg/libpq doesn't understand the SQLAlchemy `+psycopg` driver suffix that
+    main.py uses for PGVector, so strip it back to a plain postgresql:// DSN here.
+    """
+    if not connection:
+        return set()
+    dsn = connection.replace("postgresql+psycopg://", "postgresql://", 1)
+    query = """
+        SELECT DISTINCT e.cmetadata->>'case_id'
+        FROM langchain_pg_embedding e
+        JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+        WHERE c.name = %s
+    """
+    try:
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute(query, (collection_name,))
+            return {row[0] for row in cur.fetchall() if row[0] is not None}
+    except psycopg.errors.UndefinedTable:
+        # Fresh DB: collection tables not created yet → nothing ingested.
+        return set()
 
 
 # --- PDF extraction & cleaning --------------------------------------------
