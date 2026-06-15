@@ -2,5 +2,4 @@ documents
 documents-tmp
 documentssdf
 pgdata
-*.sql
 *.pyc

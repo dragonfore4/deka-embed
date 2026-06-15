@@ -1,71 +1,141 @@
+"""Thai legal-case RAG prototype.
+
+Ingests Thai Supreme Court decision PDFs into Postgres + pgvector,
+then drafts a Thai legal analysis for a user-supplied case.
+
+See AGENTS.md for setup, gotchas, and DB-reset commands.
+"""
+
 import os
 import re
 from typing import List
 from dotenv import load_dotenv
 
+# PyMuPDF (fitz) is used because pypdf garbles Thai PDFs from this corpus:
+# the embedded font's tone-mark glyphs come back as null bytes, e.g.
+# 'เกี่ยว' -> 'เกี\x00ยว'. PyMuPDF returns clean Thai text with all
+# tone marks intact, and is also ~5x faster on this corpus.
+import fitz  # type: ignore[import-untyped]
+
 from langchain_ollama import OllamaEmbeddings, ChatOllama
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import PGVector
+from langchain_postgres import PGVector
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from pythainlp.util import normalize
 
-# Load environment variables
+# --- Config ----------------------------------------------------------------
+
 load_dotenv()
 CONNECTION_STRING = os.getenv("DATABASE_URL")
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "legal_cases")
 
-def clean_legal_thai_text(text: str) -> str:
+# langchain-postgres expects a SQLAlchemy-style URL with the psycopg v3 driver.
+# Keep .env portable by normalizing the scheme here.
+if CONNECTION_STRING and CONNECTION_STRING.startswith("postgresql://"):
+    CONNECTION_STRING = CONNECTION_STRING.replace(
+        "postgresql://", "postgresql+psycopg://", 1
+    )
+
+SPLITTER = RecursiveCharacterTextSplitter(
+    chunk_size=1000,
+    chunk_overlap=200,
+    separators=["\n\n", "\n", " ", ""],
+)
+
+
+# --- PDF extraction & cleaning --------------------------------------------
+
+def extract_pdf(path: str) -> tuple[str, str]:
+    """Read a Thai Supreme Court PDF and return (text, case_no).
+
+    case_no is taken from the PDF's title metadata (e.g. '283/2565'),
+    falling back to the filename stem.
+    """
+    doc = fitz.open(path)
+    text = "\n".join(page.get_text() for page in doc)
+    case_no = (doc.metadata or {}).get("title") or os.path.splitext(
+        os.path.basename(path)
+    )[0]
+    doc.close()
+    return text, case_no
+
+
+def clean_thai_legal(text: str) -> str:
+    """Light normalization for Thai legal text.
+
+    PyMuPDF output is already clean, so this only:
+      - normalizes Thai variants (e.g. sara-am sequences) via pythainlp,
+      - collapses runs of spaces/tabs and excessive blank lines.
+    """
     text = normalize(text)
-    text = re.sub(r'\s*\.\s*', '.', text)
-    text = re.sub(r'([^\n])\n([^\n])', r'\1\2', text)
-    text = re.sub(r' {2,}', ' ', text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
+
+# --- Bot --------------------------------------------------------------------
+
 class LegalAnalysisBot:
-    def __init__(self):
-        # Use Ollama for embeddings (local)
-        # Note: Ensure you have run 'ollama pull nomic-embed-text'
-        self.embeddings = OllamaEmbeddings(model="nomic-embed-text")
-        
-        # Use Ollama for LLM (local)
-        # Note: Ensure you have run 'ollama pull llama3' or your preferred model
+    def __init__(self) -> None:
+        # Embeddings: local Ollama, 1024-dim. Run: `ollama pull qwen3-embedding:0.6b`.
+        self.embeddings = OllamaEmbeddings(model="qwen3-embedding:0.6b")
+        # Chat: cloud-proxied via ollama.com. Requires network + Ollama cloud setup.
         self.llm = ChatOllama(model="gemma4:31b-cloud", temperature=0)
-        
         self.vector_store = PGVector(
-            connection_string=CONNECTION_STRING,
+            embeddings=self.embeddings,
             collection_name=COLLECTION_NAME,
-            embedding_function=self.embeddings,
+            connection=CONNECTION_STRING,
+            use_jsonb=True,
         )
 
-    def ingest_pdfs(self, pdf_paths: List[str]):
-        all_chunks = []
-        for path in pdf_paths:
-            print(f"Processing {path}...")
-            loader = PyPDFLoader(path)
-            raw_docs = loader.load()
-            
-            cleaned_docs = []
-            for doc in raw_docs:
-                clean_content = clean_legal_thai_text(doc.page_content)
-                cleaned_docs.append(Document(page_content=clean_content, metadata=doc.metadata))
-            
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000, 
-                chunk_overlap=200,
-                separators=["\n\n", "\n", " ", ""]
-            )
-            all_chunks.extend(text_splitter.split_documents(cleaned_docs))
-        
-        self.vector_store.add_documents(all_chunks)
-        print(f"Successfully ingested {len(all_chunks)} chunks from {len(pdf_paths)} files.")
+    def ingest_pdfs(self, pdf_paths: List[str], batch_size: int = 64) -> None:
+        """Embed and upsert chunks for the given PDFs.
 
-    def analyze_case(self, case_draft: str):
+        Idempotent: chunk IDs are deterministic ('<case_id>:<n>'), so re-running
+        on the same files updates existing rows instead of duplicating them.
+        """
+        all_docs: List[Document] = []
+        all_ids: List[str] = []
+
+        for path in pdf_paths:
+            case_id = os.path.splitext(os.path.basename(path))[0]  # e.g. 'deka_666539'
+            text, case_no = extract_pdf(path)
+            chunks = SPLITTER.split_text(clean_thai_legal(text))
+            for i, chunk in enumerate(chunks):
+                all_docs.append(Document(
+                    page_content=chunk,
+                    metadata={
+                        "case_id": case_id,
+                        "case_no": case_no,
+                        "chunk": i,
+                        "source": path,
+                    },
+                ))
+                all_ids.append(f"{case_id}:{i}")
+            print(f"  prepared {len(chunks):>3} chunks  {case_id}  ({case_no})")
+
+        # Upsert in batches so progress is visible and one failure doesn't lose
+        # the whole run. PGVector.add_documents calls embed_documents on the
+        # whole batch, which Ollama processes in parallel internally.
+        n = len(all_docs)
+        print(f"\nEmbedding & upserting {n} chunks in batches of {batch_size}...")
+        for i in range(0, n, batch_size):
+            self.vector_store.add_documents(
+                all_docs[i : i + batch_size],
+                ids=all_ids[i : i + batch_size],
+            )
+            print(f"  upserted {min(i + batch_size, n)}/{n}")
+        print(f"Done. {n} chunks from {len(pdf_paths)} files.")
+
+    def analyze_case(self, case_draft: str) -> str:
         # 1. Retrieve similar cases
         docs = self.vector_store.similarity_search(case_draft, k=5)
-        context = "\n\n".join([f"Case Reference {i+1}:\n{doc.page_content}" for i, doc in enumerate(docs)])
+        context = "\n\n".join(
+            f"Case Reference {i+1}:\n{doc.page_content}"
+            for i, doc in enumerate(docs)
+        )
 
         print(context)
         print()
@@ -93,25 +163,28 @@ class LegalAnalysisBot:
         chain = prompt | self.llm | StrOutputParser()
         return chain.invoke({"context": context, "case_draft": case_draft})
 
+
 if __name__ == "__main__":
     bot = LegalAnalysisBot()
-    
-    # Ingest documents from the documents folder
-    pdf_files = [f"./documents/{f}" for f in os.listdir("./documents") if f.endswith(".pdf")]
-    # bot.ingest_pdfs(pdf_files)
+
+    # Ingest documents from the documents folder.
+    # Uncomment when (re)ingesting; ingestion is idempotent (deterministic IDs).
+    docs_dir = "./documents"
+    pdf_files = [f"{docs_dir}/{f}" for f in os.listdir(docs_dir) if f.endswith(".pdf")]
+    bot.ingest_pdfs(pdf_files)
 
     # test_case = "ร่างคดี: นาย ก. ถูกเลิกจ้างโดยไม่เป็นธรรมเนื่องจากบริษัทอ้างว่าผลงานไม่ถึงเกณฑ์ แต่นาย ก. มีหลักฐานการประเมินย้อนหลัง 3 ปีที่อยู่ในระดับดีมาก และไม่เคยได้รับคำเตือนเป็นลายลักษณ์อักษร"
-    test_case = """
-    ร่างคดี: นายสมชาย (โจทก์) พบว่า นายบุญมี (จำเลย) ซึ่งเป็นเจ้าของที่ดินข้างเคียง 
-    ได้ทำการก่อสร้างกำแพงรั้วและต่อเติมหลังคาโรงรถรุกล้ำเข้ามาในเขตที่ดินของนายสมชายประมาณ 50 เซนติเมตร ตลอดแนวเขตด้านทิศตะวันออก 
-    นอกจากนี้ นายบุญมียังนำวัสดุก่อสร้างมาวางกองปิดทับเส้นทางภาระจำยอมที่นายสมชายใช้สัญจรออกสู่ทางสาธารณะมานานกว่า 15 ปี 
-    ทำให้นายสมชายไม่สามารถนำรถยนต์เข้า-ออกบ้านได้ 
+    # test_case = """
+    # ร่างคดี: นายสมชาย (โจทก์) พบว่า นายบุญมี (จำเลย) ซึ่งเป็นเจ้าของที่ดินข้างเคียง 
+    # ได้ทำการก่อสร้างกำแพงรั้วและต่อเติมหลังคาโรงรถรุกล้ำเข้ามาในเขตที่ดินของนายสมชายประมาณ 50 เซนติเมตร ตลอดแนวเขตด้านทิศตะวันออก 
+    # นอกจากนี้ นายบุญมียังนำวัสดุก่อสร้างมาวางกองปิดทับเส้นทางภาระจำยอมที่นายสมชายใช้สัญจรออกสู่ทางสาธารณะมานานกว่า 15 ปี 
+    # ทำให้นายสมชายไม่สามารถนำรถยนต์เข้า-ออกบ้านได้ 
 
-    ข้อเรียกร้อง: 
-    1. ขอให้จำเลยรื้อถอนกำแพงและหลังคาที่รุกล้ำออกไป พร้อมปรับปรุงสภาพที่ดินให้เป็นดังเดิม
-    2. ขอให้เปิดทางภาระจำยอมและห้ามจำเลยทำการปิดกั้นอีก
-    3. เรียกค่าเสียหายจากการเสียประโยชน์ในการใช้สอยที่ดินและทางเดินรถเป็นเงิน 5,000 บาทต่อเดือน
-    """
-    print("\n--- Analyzing Case ---\n")
-    result = bot.analyze_case(test_case)
-    print(result)
+    # ข้อเรียกร้อง: 
+    # 1. ขอให้จำเลยรื้อถอนกำแพงและหลังคาที่รุกล้ำออกไป พร้อมปรับปรุงสภาพที่ดินให้เป็นดังเดิม
+    # 2. ขอให้เปิดทางภาระจำยอมและห้ามจำเลยทำการปิดกั้นอีก
+    # 3. เรียกค่าเสียหายจากการเสียประโยชน์ในการใช้สอยที่ดินและทางเดินรถเป็นเงิน 5,000 บาทต่อเดือน
+    # """
+    # print("\n--- Analyzing Case ---\n")
+    # result = bot.analyze_case(test_case)
+    # print(result)

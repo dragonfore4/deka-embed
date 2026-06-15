@@ -1,0 +1,250 @@
+# Thai Legal-Case RAG Prototype
+# ระบบวิเคราะห์คดีความภาษาไทยด้วย RAG (ต้นแบบ)
+
+A single-file research script (`main.py`) that ingests Thai Supreme Court decision PDFs (คำพิพากษาฎีกา) into Postgres + pgvector, then drafts a Thai legal analysis for a user-supplied case using Ollama.
+
+สคริปต์ไฟล์เดียว (`main.py`) สำหรับนำคำพิพากษาฎีกาในรูปแบบ PDF เข้าสู่ฐานข้อมูล Postgres + pgvector และใช้ Ollama ในการร่างบทวิเคราะห์คดีภาษาไทยจากร่างคดีที่ผู้ใช้ป้อน
+
+> ⚠️ **Disclaimer / คำเตือน**
+> Internal research prototype. AI-generated output is **not** legal advice and must not be relied on for real legal decisions.
+> เป็นต้นแบบเพื่อการวิจัยภายในเท่านั้น ผลลัพธ์จาก AI **ไม่ใช่** คำแนะนำทางกฎหมาย ห้ามนำไปใช้ตัดสินใจทางกฎหมายจริง
+
+---
+
+## 📋 What it does / ระบบทำอะไร
+
+**EN**
+- Extracts text from Thai Supreme Court PDFs with PyMuPDF (`fitz`).
+- Normalizes Thai text and splits it into overlapping chunks (1000 / 200).
+- Embeds chunks locally via Ollama and stores them in Postgres + pgvector.
+- For a given case draft, retrieves the top-5 most similar chunks and asks a chat model to produce a structured Thai analysis (win/lose odds, strengths, weaknesses, comparisons, recommendations).
+
+**TH**
+- ดึงข้อความจากไฟล์ PDF คำพิพากษาฎีกาด้วย PyMuPDF (`fitz`)
+- ปรับมาตรฐานข้อความภาษาไทยและแบ่งเป็นชิ้น (chunk) ขนาด 1000 ตัวอักษร เหลื่อม 200
+- สร้าง embedding ผ่าน Ollama ที่รันในเครื่องและเก็บลง Postgres + pgvector
+- เมื่อรับร่างคดีจากผู้ใช้ ระบบจะค้นหาชิ้นข้อความที่คล้ายที่สุด 5 ชิ้น แล้วส่งให้โมเดล chat สร้างบทวิเคราะห์ภาษาไทยตามหัวข้อ (โอกาสชนะ/แพ้ จุดแข็ง จุดอ่อน การเปรียบเทียบ และคำแนะนำ)
+
+---
+
+## 🧩 Stack / เทคโนโลยีที่ใช้
+
+| Layer / ส่วนประกอบ | Tool / เครื่องมือ |
+|---|---|
+| PDF extraction | PyMuPDF (`fitz`) |
+| Thai normalization | `pythainlp.normalize` |
+| Chunking | `RecursiveCharacterTextSplitter` (1000 / 200) |
+| Embeddings | Ollama `qwen3-embedding:0.6b` (1024-dim, local) |
+| Vector store | Postgres 16 + pgvector (via `langchain-postgres`) |
+| Chat model | Ollama `gemma4:31b-cloud` (cloud-proxied) |
+| Runtime | Python 3.12 + [`uv`](https://docs.astral.sh/uv/) |
+| Container | `podman` + `podman compose` |
+
+---
+
+## ✅ Requirements / สิ่งที่ต้องมี
+
+**EN**
+- Python 3.12 (managed by `uv`).
+- `podman` and `podman compose`.
+- A running local Ollama, with:
+  - `qwen3-embedding:0.6b` pulled locally for embeddings.
+  - An Ollama account configured for cloud models (for `gemma4:31b-cloud`) and a working internet connection.
+
+**TH**
+- Python 3.12 (จัดการผ่าน `uv`)
+- `podman` และ `podman compose`
+- Ollama ที่รันในเครื่อง พร้อมกับ:
+  - ดึงโมเดล `qwen3-embedding:0.6b` มาไว้ในเครื่องเพื่อใช้ทำ embedding
+  - บัญชี Ollama ที่ตั้งค่าใช้งานโมเดล cloud ได้ (สำหรับ `gemma4:31b-cloud`) และมีอินเทอร์เน็ต
+
+---
+
+## 📦 Setup / การติดตั้ง
+
+**EN**
+
+1. Install Python deps:
+   ```bash
+   uv sync
+   ```
+2. Pull the embedding model (cloud chat model is fetched on demand by Ollama):
+   ```bash
+   ollama pull qwen3-embedding:0.6b
+   ```
+3. Start the database (see the next section).
+4. Create a `.env` file in the repo root:
+   ```env
+   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/legal_db
+   COLLECTION_NAME=legal_cases   # optional, this is the default
+   ```
+   Keep the plain `postgresql://` form — `main.py` rewrites it to `postgresql+psycopg://` at runtime.
+5. Drop your PDF corpus into `./documents/` (one file per case).
+
+**TH**
+
+1. ติดตั้ง dependency ของ Python:
+   ```bash
+   uv sync
+   ```
+2. ดึงโมเดล embedding (ส่วนโมเดล chat แบบ cloud ระบบ Ollama จะจัดการให้เอง):
+   ```bash
+   ollama pull qwen3-embedding:0.6b
+   ```
+3. สตาร์ทฐานข้อมูล (ดูหัวข้อถัดไป)
+4. สร้างไฟล์ `.env` ที่รากของโปรเจกต์:
+   ```env
+   DATABASE_URL=postgresql://postgres:postgres@localhost:5432/legal_db
+   COLLECTION_NAME=legal_cases   # ไม่ใส่ก็ได้ ค่าเริ่มต้นคือชื่อนี้
+   ```
+   ใส่เป็น `postgresql://` ตามปกติ — โค้ดใน `main.py` จะแปลงเป็น `postgresql+psycopg://` เองตอนรัน
+5. นำไฟล์ PDF ของคดีมาวางไว้ใน `./documents/` (หนึ่งไฟล์ต่อหนึ่งคดี)
+
+---
+
+## 🐳 Database (Podman) / ฐานข้อมูล
+
+Container is defined in `compose.yaml`: image `pgvector/pgvector:pg16`, name `legal-pgvector`, port `5432`, db `legal_db`, user/password `postgres/postgres`. Data persists in `./pgdata/` (git-ignored).
+
+คอนเทนเนอร์ถูกประกาศไว้ใน `compose.yaml` ใช้ image `pgvector/pgvector:pg16` ชื่อ `legal-pgvector` พอร์ต `5432` ฐานข้อมูล `legal_db` ผู้ใช้/รหัสผ่าน `postgres/postgres` ข้อมูลถูกเก็บไว้ที่ `./pgdata/` (ถูก ignore โดย git)
+
+```bash
+# Start in background / สตาร์ทแบบทำงานเบื้องหลัง
+podman compose up -d
+
+# Stop (keep container) / หยุด (เก็บคอนเทนเนอร์ไว้)
+podman compose stop
+
+# Stop + remove container (data in ./pgdata is kept) / หยุดและลบคอนเทนเนอร์ (ข้อมูลใน ./pgdata ยังอยู่)
+podman compose down
+
+# Tail logs / ดู log
+podman compose logs -f db
+
+# Status / ดูสถานะ
+podman ps
+
+# Open psql shell / เปิด psql
+podman exec -it legal-pgvector psql -U postgres -d legal_db
+```
+
+---
+
+## 🚀 Running / การรัน
+
+```bash
+uv run python main.py
+```
+
+**EN**
+- The `__main__` block in `main.py` is currently set to **ingest** every PDF in `./documents/`.
+- The `analyze_case(...)` example is commented out. To switch to "analysis only":
+  1. Comment out `bot.ingest_pdfs(pdf_files)`.
+  2. Uncomment one of the `test_case = "..."` blocks and the `bot.analyze_case(test_case)` call.
+- Ingestion is **idempotent**: chunk IDs are deterministic (`<case_id>:<n>`, e.g. `deka_666539:0`), so re-running upserts existing rows instead of duplicating them.
+
+**TH**
+- บล็อก `__main__` ใน `main.py` ตั้งค่าให้ **นำเข้า (ingest)** ทุกไฟล์ PDF ใน `./documents/`
+- ส่วน `analyze_case(...)` ถูกคอมเมนต์ไว้ หากต้องการให้รันเฉพาะการวิเคราะห์:
+  1. คอมเมนต์ `bot.ingest_pdfs(pdf_files)` ออก
+  2. ยกเลิกคอมเมนต์ของบล็อก `test_case = "..."` ตัวใดตัวหนึ่ง และบรรทัด `bot.analyze_case(test_case)`
+- การ ingest เป็นแบบ **idempotent**: chunk ID ถูกกำหนดแบบ deterministic (`<case_id>:<n>` เช่น `deka_666539:0`) ดังนั้นการรันซ้ำจะ upsert ทับข้อมูลเดิม ไม่สร้างซ้ำ
+
+> ⚠️ Caveat: if a document is later re-chunked into **fewer** pieces, the leftover high-index chunks from a previous run are not deleted automatically. For that case, soft-wipe the collection first (see "Resetting" below).
+>
+> ⚠️ ข้อควรระวัง: ถ้าเอกสารถูกแบ่งใหม่เหลือ chunk **น้อยลง** ตัว chunk เก่าที่มี index สูงจะไม่ถูกลบให้ ต้องล้าง collection ก่อน (ดูหัวข้อ "Resetting" ด้านล่าง)
+
+---
+
+## 🗄️ DB dump & restore / สำรองและกู้คืนฐานข้อมูล
+
+```bash
+# --- Dump / สำรองข้อมูล ---
+
+# Whole cluster (all DBs + roles) / สำรองทุกฐานข้อมูล + roles
+podman exec -t legal-pgvector pg_dumpall -U postgres > full_dump.sql
+
+# Single DB, plain SQL / สำรองเฉพาะ legal_db เป็น SQL ธรรมดา
+podman exec -t legal-pgvector pg_dump -U postgres -d legal_db > legal_db.sql
+
+# Single DB, custom format (compressed, recommended) / สำรองแบบ custom format (บีบอัด แนะนำ)
+podman exec -t legal-pgvector pg_dump -U postgres -d legal_db -Fc > legal_db.dump
+
+
+# --- Restore / กู้คืน ---
+
+# From plain SQL / กู้คืนจากไฟล์ SQL
+podman exec -i legal-pgvector psql -U postgres -d legal_db < legal_db.sql
+
+# From custom format / กู้คืนจาก custom format
+podman exec -i legal-pgvector pg_restore -U postgres -d legal_db --clean --if-exists < legal_db.dump
+```
+
+> ⚠️ `*.sql` is git-ignored. **Do not commit dumps** — they are large and may contain copyrighted court text.
+> ⚠️ ไฟล์ `*.sql` ถูก ignore โดย git อยู่แล้ว **อย่า commit ไฟล์ dump** เพราะไฟล์ใหญ่และอาจมีข้อความคำพิพากษาที่มีลิขสิทธิ์
+
+---
+
+## 🔄 Resetting / รีเซ็ตเมื่อเปลี่ยน embedding model
+
+The vector dimension is **locked at first write** (currently 1024 for `qwen3-embedding:0.6b`). If you swap to a different embedding model, you must wipe existing vectors first.
+
+มิติของ vector จะ **ถูกล็อกตั้งแต่ครั้งแรกที่เขียนข้อมูล** (ปัจจุบันคือ 1024 มิติ สำหรับโมเดล `qwen3-embedding:0.6b`) ถ้าจะเปลี่ยนโมเดล embedding ต้องล้างข้อมูลเก่าก่อน
+
+```bash
+# Hard wipe (destroy DB volume) / ล้างทั้งหมด (ลบ volume)
+podman compose down && rm -rf pgdata && podman compose up -d
+
+# Soft wipe (keep DB, drop only collection tables) / ล้างเฉพาะ collection tables
+podman exec -it legal-pgvector psql -U postgres -d legal_db \
+  -c "DROP TABLE IF EXISTS langchain_pg_embedding, langchain_pg_collection CASCADE;"
+```
+
+---
+
+## 📁 Project layout / โครงสร้างไฟล์
+
+```
+.
+├── main.py              # The whole script / สคริปต์หลักทั้งหมด
+├── compose.yaml         # Postgres + pgvector container / ไฟล์ตั้งค่าคอนเทนเนอร์
+├── init.sql             # Runs against default 'postgres' DB on first boot / รันตอน init
+├── pyproject.toml       # Python deps / dependency
+├── uv.lock              # uv lockfile
+├── .python-version      # Python 3.12
+├── .env                 # Local config (git-ignored) / ตั้งค่าเฉพาะเครื่อง (ignored)
+├── documents/           # PDF corpus (~995 files, git-ignored) / คลังไฟล์ PDF (ignored)
+├── pgdata/              # Postgres data volume (git-ignored) / ข้อมูล Postgres (ignored)
+├── AGENTS.md            # Deeper notes & gotchas for contributors / บันทึกเชิงลึกสำหรับผู้พัฒนา
+└── README.md            # This file / ไฟล์นี้
+```
+
+**Unused legacy / ไฟล์เก่าที่ไม่ใช้แล้ว — ignore:** `documents-tmp/`, `documentssdf/`, `ingest/`, `.env.py`.
+
+---
+
+## 🧠 Notes & gotchas / ข้อควรระวัง
+
+**EN**
+- **PyMuPDF, not pypdf.** pypdf garbles this corpus's Thai fonts (tone marks come back as `\x00`). Don't switch back.
+- **`gemma4:31b-cloud` is cloud-routed via ollama.com.** It needs network and a configured Ollama cloud account. Not a typo.
+- **Embedding dimension is locked at first write** — 1024 for the current model. Reset before changing models.
+- **Don't commit** `.env`, `pgdata/`, `documents/`, or any `*.sql` dumps.
+- **Don't run a full ingest casually** — ~995 PDFs through a local embedding model is slow.
+- For deeper notes (idempotency edge cases, dependency pins, etc.) see [`AGENTS.md`](./AGENTS.md).
+
+**TH**
+- **ใช้ PyMuPDF ห้ามกลับไปใช้ pypdf** เพราะ pypdf อ่านฟอนต์ไทยในคลังนี้ผิด (วรรณยุกต์กลายเป็น `\x00`)
+- **`gemma4:31b-cloud` เป็นโมเดล cloud ผ่าน ollama.com** ต้องมีอินเทอร์เน็ตและบัญชี Ollama ที่เปิด cloud ไว้ ไม่ใช่พิมพ์ผิด
+- **มิติของ embedding ถูกล็อกตั้งแต่ครั้งแรกที่เขียน** — ปัจจุบัน 1024 ถ้าเปลี่ยนโมเดลต้องรีเซ็ตก่อน
+- **ห้าม commit** `.env`, `pgdata/`, `documents/` หรือไฟล์ `*.sql`
+- **อย่ารัน ingest เต็มชุดเล่น ๆ** — ~995 ไฟล์ผ่านโมเดล embedding ในเครื่องใช้เวลานานพอสมควร
+- รายละเอียดเชิงลึกเพิ่มเติม (กรณี edge ของ idempotency, การ pin เวอร์ชัน ฯลฯ) ดูที่ [`AGENTS.md`](./AGENTS.md)
+
+---
+
+## ⚖️ License / ใบอนุญาต
+
+This is an internal research prototype with no public license attached. Note that **PyMuPDF is AGPL-3.0** — fine for internal use, but relevant if you ever redistribute the code or expose it as a network service.
+
+โปรเจกต์นี้เป็นต้นแบบเพื่อการวิจัยภายใน ไม่มี license สาธารณะแนบมา ข้อสังเกต: **PyMuPDF ใช้ license AGPL-3.0** ซึ่งใช้ภายในได้ปกติ แต่ต้องระวังถ้าจะเผยแพร่โค้ดหรือเปิดเป็นบริการบนเครือข่ายในอนาคต
