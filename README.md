@@ -14,15 +14,15 @@ A single-file research script (`main.py`) that ingests Thai Supreme Court decisi
 ## 📋 What it does / ระบบทำอะไร
 
 **EN**
-- Extracts text from Thai Supreme Court PDFs with PyMuPDF (`fitz`).
+- Extracts text from Thai Supreme Court PDFs with PyMuPDF (`fitz`), collected **recursively** from `./documents/` (PDFs may sit directly in the folder or in nested subfolders, e.g. per-year).
 - Normalizes Thai text and splits it into overlapping chunks (1000 / 200).
-- Embeds chunks locally via Ollama and stores them in Postgres + pgvector.
+- Embeds chunks locally via Ollama and stores them in Postgres + pgvector. Ingestion is **concurrent** (embedding overlaps DB writes so the GPU isn't idle) and **resumable** (a re-run skips PDFs already in the store).
 - For a given case draft, retrieves the top-5 most similar chunks and asks a chat model to produce a structured Thai analysis (win/lose odds, strengths, weaknesses, comparisons, recommendations).
 
 **TH**
-- ดึงข้อความจากไฟล์ PDF คำพิพากษาฎีกาด้วย PyMuPDF (`fitz`)
+- ดึงข้อความจากไฟล์ PDF คำพิพากษาฎีกาด้วย PyMuPDF (`fitz`) โดยเก็บไฟล์จาก `./documents/` แบบ **recursive** (วาง PDF ไว้ในโฟลเดอร์ตรง ๆ หรือจัดเป็น subfolder ซ้อน เช่นแยกตามปี ก็ได้)
 - ปรับมาตรฐานข้อความภาษาไทยและแบ่งเป็นชิ้น (chunk) ขนาด 1000 ตัวอักษร เหลื่อม 200
-- สร้าง embedding ผ่าน Ollama ที่รันในเครื่องและเก็บลง Postgres + pgvector
+- สร้าง embedding ผ่าน Ollama ที่รันในเครื่องและเก็บลง Postgres + pgvector การ ingest ทำแบบ **concurrent** (embedding ทำคู่ขนานกับการเขียน DB เพื่อไม่ให้ GPU ว่าง) และ **resumable** (รันซ้ำจะข้ามไฟล์ที่ embed ไปแล้ว)
 - เมื่อรับร่างคดีจากผู้ใช้ ระบบจะค้นหาชิ้นข้อความที่คล้ายที่สุด 5 ชิ้น แล้วส่งให้โมเดล chat สร้างบทวิเคราะห์ภาษาไทยตามหัวข้อ (โอกาสชนะ/แพ้ จุดแข็ง จุดอ่อน การเปรียบเทียบ และคำแนะนำ)
 
 ---
@@ -79,7 +79,7 @@ A single-file research script (`main.py`) that ingests Thai Supreme Court decisi
    COLLECTION_NAME=legal_cases   # optional, this is the default
    ```
    Keep the plain `postgresql://` form — `main.py` rewrites it to `postgresql+psycopg://` at runtime.
-5. Drop your PDF corpus into `./documents/` (one file per case).
+5. Drop your PDF corpus into `./documents/` (one file per case). Subfolders are fine — PDFs are collected recursively (`Path(docs_dir).rglob("*.pdf")`). `case_id` comes from the **filename** only (e.g. `deka_718365.pdf` → `deka_718365`), so keep filenames unique across folders.
 
 **TH**
 
@@ -98,7 +98,7 @@ A single-file research script (`main.py`) that ingests Thai Supreme Court decisi
    COLLECTION_NAME=legal_cases   # ไม่ใส่ก็ได้ ค่าเริ่มต้นคือชื่อนี้
    ```
    ใส่เป็น `postgresql://` ตามปกติ — โค้ดใน `main.py` จะแปลงเป็น `postgresql+psycopg://` เองตอนรัน
-5. นำไฟล์ PDF ของคดีมาวางไว้ใน `./documents/` (หนึ่งไฟล์ต่อหนึ่งคดี)
+5. นำไฟล์ PDF ของคดีมาวางไว้ใน `./documents/` (หนึ่งไฟล์ต่อหนึ่งคดี) จะวางใน subfolder ก็ได้ ระบบเก็บแบบ recursive (`Path(docs_dir).rglob("*.pdf")`) ทั้งนี้ `case_id` มาจาก**ชื่อไฟล์**อย่างเดียว (เช่น `deka_718365.pdf` → `deka_718365`) จึงควรตั้งชื่อไฟล์ไม่ให้ซ้ำกันข้ามโฟลเดอร์
 
 ---
 
@@ -137,18 +137,34 @@ uv run python main.py
 ```
 
 **EN**
-- The `__main__` block in `main.py` is currently set to **ingest** every PDF in `./documents/`.
+- The `__main__` block in `main.py` is currently set to **ingest** every PDF found recursively under `./documents/`.
 - The `analyze_case(...)` example is commented out. To switch to "analysis only":
   1. Comment out `bot.ingest_pdfs(pdf_files)`.
   2. Uncomment one of the `test_case = "..."` blocks and the `bot.analyze_case(test_case)` call.
 - Ingestion is **idempotent**: chunk IDs are deterministic (`<case_id>:<n>`, e.g. `deka_666539:0`), so re-running upserts existing rows instead of duplicating them.
+- Ingestion is **concurrent and resumable** — see "Ingest options" below.
 
 **TH**
-- บล็อก `__main__` ใน `main.py` ตั้งค่าให้ **นำเข้า (ingest)** ทุกไฟล์ PDF ใน `./documents/`
+- บล็อก `__main__` ใน `main.py` ตั้งค่าให้ **นำเข้า (ingest)** ทุกไฟล์ PDF ที่หาเจอแบบ recursive ใต้ `./documents/`
 - ส่วน `analyze_case(...)` ถูกคอมเมนต์ไว้ หากต้องการให้รันเฉพาะการวิเคราะห์:
   1. คอมเมนต์ `bot.ingest_pdfs(pdf_files)` ออก
   2. ยกเลิกคอมเมนต์ของบล็อก `test_case = "..."` ตัวใดตัวหนึ่ง และบรรทัด `bot.analyze_case(test_case)`
 - การ ingest เป็นแบบ **idempotent**: chunk ID ถูกกำหนดแบบ deterministic (`<case_id>:<n>` เช่น `deka_666539:0`) ดังนั้นการรันซ้ำจะ upsert ทับข้อมูลเดิม ไม่สร้างซ้ำ
+- การ ingest ทำแบบ **concurrent และ resumable** — ดูหัวข้อ "Ingest options" ด้านล่าง
+
+### ⚙️ Ingest options / ตัวเลือกการนำเข้า
+
+`bot.ingest_pdfs(pdf_paths, batch_size=64, max_workers=2, skip_existing=True)`
+
+| Param | Default | EN | TH |
+|---|---|---|---|
+| `batch_size` | `64` | Chunks embedded + upserted per batch. | จำนวน chunk ต่อ batch ที่ embed + เขียนลง DB |
+| `max_workers` | `2` | Concurrent upsert workers. Embedding overlaps DB writes so the GPU stays fed. Keep `<=` PGVector's pool size (5). | จำนวน worker ที่ upsert พร้อมกัน ให้ embedding ทับซ้อนกับการเขียน DB เพื่อไม่ให้ GPU ว่าง ควร `<=` ขนาด pool ของ PGVector (5) |
+| `skip_existing` | `True` | Skip PDFs whose `case_id` is already in the store (per-file). Resume a partial run / add new files without re-embedding. Set `False` to re-embed existing files (e.g. after tweaking the cleaner/splitter). | ข้ามไฟล์ที่ `case_id` มีใน DB แล้ว (ระดับไฟล์) ใช้ทำ resume / เพิ่มไฟล์ใหม่โดยไม่ต้อง embed ซ้ำ ตั้งเป็น `False` เมื่ออยาก re-embed ไฟล์เดิม (เช่นหลังแก้ cleaner/splitter) |
+
+**EN** — A failed batch is reported (`[WARN]`) and skipped, not fatal; the run continues and you re-run to retry (idempotent). Optionally set `OLLAMA_NUM_PARALLEL>=2` on the Ollama server to let two embeds run at once — not required; the embed/DB-write overlap helps even at the default of 1.
+
+**TH** — ถ้า batch ใด fail จะถูกรายงาน (`[WARN]`) แล้วข้าม ไม่ล้มทั้ง run รันซ้ำเพื่อ retry ได้ (idempotent) ถ้าต้องการให้ embed 2 ก้อนพร้อมกันจริง ตั้ง `OLLAMA_NUM_PARALLEL>=2` ฝั่ง Ollama server (ไม่จำเป็น — การ overlap embed/เขียน DB ช่วยอยู่แล้วแม้ค่าเริ่มต้นเป็น 1)
 
 > ⚠️ Caveat: if a document is later re-chunked into **fewer** pieces, the leftover high-index chunks from a previous run are not deleted automatically. For that case, soft-wipe the collection first (see "Resetting" below).
 >
@@ -208,12 +224,14 @@ podman exec -it legal-pgvector psql -U postgres -d legal_db \
 .
 ├── main.py              # The whole script / สคริปต์หลักทั้งหมด
 ├── compose.yaml         # Postgres + pgvector container / ไฟล์ตั้งค่าคอนเทนเนอร์
-├── init.sql             # Runs against default 'postgres' DB on first boot / รันตอน init
+├── legal_db_2005.sql    # Seed dump mounted by compose on first boot (full embedded corpus) / ดัมป์ seed ที่ compose โหลดตอน init (มี embedding ครบ)
+├── init.sql             # Alt init script (currently not mounted; see compose.yaml) / สคริปต์ init สำรอง (ยังไม่ถูก mount)
 ├── pyproject.toml       # Python deps / dependency
 ├── uv.lock              # uv lockfile
 ├── .python-version      # Python 3.12
-├── .env                 # Local config (git-ignored) / ตั้งค่าเฉพาะเครื่อง (ignored)
-├── documents/           # PDF corpus (~995 files, git-ignored) / คลังไฟล์ PDF (ignored)
+├── .env                 # Local config / ตั้งค่าเฉพาะเครื่อง
+├── .env.example         # Template for .env / เทมเพลตสำหรับ .env
+├── documents/           # PDF corpus (~995 files, may be nested, git-ignored) / คลังไฟล์ PDF (ซ้อนโฟลเดอร์ได้, ignored)
 ├── pgdata/              # Postgres data volume (git-ignored) / ข้อมูล Postgres (ignored)
 ├── AGENTS.md            # Deeper notes & gotchas for contributors / บันทึกเชิงลึกสำหรับผู้พัฒนา
 └── README.md            # This file / ไฟล์นี้

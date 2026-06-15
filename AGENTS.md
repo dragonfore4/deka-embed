@@ -24,7 +24,7 @@ No tests, no lint/format/typecheck config, no CI. It is a research script — ke
 
 ## Gotchas
 
-- **`bot.ingest_pdfs(...)` in the `__main__` block is commented out on purpose.** Default run = analysis only against existing vectors. The user uncomments it when (re)ingesting. The user is actively iterating on the embedding model, so this toggling is normal.
+- **The `__main__` block toggles between ingest and analyze.** It currently runs a **full ingest** — `pdf_files = sorted(str(p) for p in Path(docs_dir).rglob("*.pdf"))` (recursive, so nested per-year subfolders under `./documents/` work) then `bot.ingest_pdfs(pdf_files)`. The `analyze_case(...)` example is commented out. To do analysis-only, comment the ingest call and uncomment a `test_case` + `bot.analyze_case(...)`. The user iterates on the embedding model, so this toggling is normal.
 - **Ingestion is idempotent.** Chunk IDs are deterministic (`<case_id>:<n>`, e.g. `deka_666539:0`), so `add_documents(..., ids=...)` upserts existing rows on re-run. Tweaking the cleaner or splitter and re-running on the same files is safe — old chunks get overwritten. **Caveat:** if a doc is *re-chunked into fewer pieces*, the leftover high-index chunks are not deleted; they go stale. For that case, soft-wipe the collection first.
 - **`ingest_pdfs` is concurrent and resumable.** Defaults: `batch_size=64`, `max_workers=2`, `skip_existing=True`. `skip_existing` drops PDFs whose `case_id` is already in the collection (per-file, via `_existing_case_ids` querying `langchain_pg_embedding.cmetadata->>'case_id'`) — so a re-run resumes a partial ingest / adds only new files without re-embedding the corpus. Set `skip_existing=False` when you tweak the cleaner/splitter and want existing files re-embedded in place. `max_workers` overlaps Ollama embedding with Postgres writes so the GPU isn't idle during writes; keep it `<=` PGVector's default pool size (5). Optionally set `OLLAMA_NUM_PARALLEL>=2` on the `ollama serve` side to let two embeds run at once (not required — the embed/DB-write overlap helps even at the default of 1). A failed batch is reported and skipped, not fatal; re-run to retry. **Per-file skip keeps the re-chunk caveat above** — soft-wipe before re-chunking into fewer pieces.
 - **Changing the embedding model invalidates the whole collection** — the vector dimension is locked at first write (1024 for `qwen3-embedding:0.6b`). You must reset before swapping embedders. See "DB reset".
@@ -45,12 +45,16 @@ No tests, no lint/format/typecheck config, no CI. It is a research script — ke
 
 ## Repo layout quirks
 
-- `documents/` — ~995 PDFs, the real corpus, git-ignored.
+- `documents/` — ~995 PDFs, the real corpus, git-ignored. Collected **recursively** (`Path(docs_dir).rglob("*.pdf")`), so PDFs may be nested in subfolders (e.g. per-year). `case_id` derives from the filename only, so filenames must be unique across folders.
 - `documents-tmp/`, `documentssdf/` — leftover sample folders, **not used by code**. Ignore.
 - `ingest/` — only contains `__pycache__`. No real module.
 - `.env.py` — unused legacy sketch referencing Supabase + OpenAI. Current code uses Ollama + local Postgres only. Don't follow it.
-- `full_dump.sql` (~190 MB), `pgdata/` — local-only, git-ignored (`.gitignore` excludes `*.sql` and `pgdata`).
-- `README.md` is intentionally empty.
+- **`.gitignore` reality (it lies elsewhere):** it currently ignores only `documents`, `documents-tmp`, `documentssdf`, `pgdata`, `*.pyc`. It does **not** ignore `*.sql` or `.env`.
+  - `legal_db_2005.sql` (~174 MB) is **committed on purpose** — it is the seed `compose.yaml` mounts as the DB init script (full embedded corpus: 995 case_ids / 11,742 chunks). Don't delete it casually.
+  - Other dumps (`full_dump.sql`, `legal_db.sql`, `*.dump`) should **not** be committed (large / may contain copyrighted court text) — but they are not auto-ignored, so don't `git add .` blindly.
+  - `.env` is currently **tracked** despite docs saying "don't commit `.env`". It holds only localhost `postgres/postgres` creds, but consider gitignoring + untracking it and using `.env.example` instead.
+- `pgdata/` — local Postgres volume, git-ignored.
+- `README.md` is a full bilingual (EN/TH) guide. Keep it in sync with `main.py` (ingest options, reset commands, layout).
 
 ## Don't
 
