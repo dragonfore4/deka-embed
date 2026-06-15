@@ -120,12 +120,44 @@ class LegalAnalysisBot:
             use_jsonb=True,
         )
 
-    def ingest_pdfs(self, pdf_paths: List[str], batch_size: int = 64) -> None:
+    def ingest_pdfs(
+        self,
+        pdf_paths: List[str],
+        batch_size: int = 64,
+        max_workers: int = 2,
+        skip_existing: bool = True,
+    ) -> None:
         """Embed and upsert chunks for the given PDFs.
 
         Idempotent: chunk IDs are deterministic ('<case_id>:<n>'), so re-running
         on the same files updates existing rows instead of duplicating them.
+
+        skip_existing=True (default) drops PDFs whose case_id is already in the
+        collection (per-file) — use it to resume a partial run or add new files
+        without re-embedding the whole corpus. Set it False when iterating on the
+        cleaner/splitter so existing files get re-embedded in place.
+
+        Upserts run concurrently (max_workers): while one batch is being written
+        to Postgres, another can be embedding via Ollama, so the GPU is not idle
+        during DB writes. max_workers stays <= PGVector's default pool size (5).
+        Set OLLAMA_NUM_PARALLEL>=2 on the Ollama server to also let two embeds run
+        at once — optional; the embed/DB-write overlap helps even at the default.
         """
+        if skip_existing:
+            existing = _existing_case_ids(CONNECTION_STRING, COLLECTION_NAME)
+            before = len(pdf_paths)
+            pdf_paths = [
+                p for p in pdf_paths
+                if os.path.splitext(os.path.basename(p))[0] not in existing
+            ]
+            print(
+                f"skip_existing: {before - len(pdf_paths)} already-ingested file(s) "
+                f"skipped, {len(pdf_paths)} to embed."
+            )
+            if not pdf_paths:
+                print("Nothing to ingest.")
+                return
+
         all_docs: List[Document] = []
         all_ids: List[str] = []
 
@@ -146,18 +178,49 @@ class LegalAnalysisBot:
                 all_ids.append(f"{case_id}:{i}")
             print(f"  prepared {len(chunks):>3} chunks  {case_id}  ({case_no})")
 
-        # Upsert in batches so progress is visible and one failure doesn't lose
-        # the whole run. PGVector.add_documents calls embed_documents on the
-        # whole batch, which Ollama processes in parallel internally.
         n = len(all_docs)
-        print(f"\nEmbedding & upserting {n} chunks in batches of {batch_size}...")
-        for i in range(0, n, batch_size):
-            self.vector_store.add_documents(
-                all_docs[i : i + batch_size],
-                ids=all_ids[i : i + batch_size],
+        if n == 0:
+            print("No chunks to embed.")
+            return
+
+        # Concurrent upserts: each task does embed + DB write. While one worker is
+        # blocked on a Postgres write (GIL released), another embeds via Ollama
+        # (GIL released), so the GPU stays fed. One failed batch is recorded and
+        # skipped, not fatal — re-running repairs it (deterministic IDs).
+        batches = [
+            (all_docs[i : i + batch_size], all_ids[i : i + batch_size])
+            for i in range(0, n, batch_size)
+        ]
+        print(
+            f"\nEmbedding & upserting {n} chunks in {len(batches)} batches of "
+            f"{batch_size} ({max_workers} workers)..."
+        )
+
+        done = 0
+        failures: list[tuple[int, Exception]] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_batch = {
+                executor.submit(self.vector_store.add_documents, docs, ids=ids): bi
+                for bi, (docs, ids) in enumerate(batches)
+            }
+            for future in as_completed(future_to_batch):
+                bi = future_to_batch[future]
+                try:
+                    future.result()
+                    done += len(batches[bi][0])
+                    print(f"  upserted {done}/{n}")
+                except Exception as exc:  # noqa: BLE001 - report & continue
+                    failures.append((bi, exc))
+                    print(f"  [WARN] batch {bi} failed: {exc}")
+
+        if failures:
+            print(
+                f"Done with errors. {done}/{n} chunks upserted from "
+                f"{len(pdf_paths)} files; {len(failures)} batch(es) failed. "
+                f"Re-run to retry (ingestion is idempotent)."
             )
-            print(f"  upserted {min(i + batch_size, n)}/{n}")
-        print(f"Done. {n} chunks from {len(pdf_paths)} files.")
+        else:
+            print(f"Done. {n} chunks from {len(pdf_paths)} files.")
 
     def analyze_case(self, case_draft: str) -> str:
         # 1. Retrieve similar cases
