@@ -212,7 +212,14 @@ podman exec -i legal-pgvector pg_restore -U postgres -d legal_db --clean --if-ex
 `compose.yaml` mount ไฟล์ `legal_db_2005.sql` เป็น init script ซึ่งจะถูกโหลด **เฉพาะตอน `pgdata/` ว่าง** (บูตครั้งแรก) ถ้าจะอัปเดต seed จากข้อมูลปัจจุบัน:
 
 ```bash
+# Re-dumping without -t also rewrites the file with clean LF endings, fixing any
+# CRLF left by an older `pg_dump -t` dump (harmless to Postgres COPY, but cleaner).
+# การ re-dump แบบไม่มี -t จะเขียนไฟล์ใหม่เป็น LF สะอาด แก้ CRLF ที่อาจค้างจาก dump เก่าที่ใช้ -t
 podman exec legal-pgvector pg_dump -U postgres -d legal_db > legal_db_2005.sql
+
+# Verify clean LF (should print 0) / ตรวจว่าเป็น LF สะอาด (ควรได้ 0)
+LC_ALL=C grep -c $'\r' legal_db_2005.sql
+
 # To actually reload it / ถ้าจะให้โหลดใหม่จริง:
 podman compose down && rm -rf pgdata && podman compose up -d
 ```
