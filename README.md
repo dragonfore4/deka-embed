@@ -189,13 +189,6 @@ podman exec legal-pgvector pg_dump -U postgres -d legal_db > legal_db_latest.sql
 # ...or stamp the filename with today's date / หรือใส่วันที่ในชื่อไฟล์
 podman exec legal-pgvector pg_dump -U postgres -d legal_db > "legal_db_$(date +%Y%m%d).sql"
 
-# Single DB, custom format (compressed) / แบบ custom format (บีบอัด)
-podman exec legal-pgvector pg_dump -U postgres -d legal_db -Fc > legal_db.dump
-
-# Whole cluster (all DBs + roles) / ทุกฐานข้อมูล + roles
-podman exec legal-pgvector pg_dumpall -U postgres > full_dump.sql
-
-
 # --- Restore / กู้คืน ---
 
 # From plain SQL / กู้คืนจากไฟล์ SQL

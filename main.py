@@ -267,7 +267,7 @@ if __name__ == "__main__":
     # organized into nested folders (e.g. per-year ./downloads/2564-2565-991/*.pdf).
     # case_id/id come from the filename only (not the folder), so the layout is
     # irrelevant as long as filenames are unique across folders.
-    docs_dir = "./documents"
+    docs_dir = "./documents/"
     pdf_files = sorted(str(p) for p in Path(docs_dir).rglob("*.pdf"))
     bot.ingest_pdfs(pdf_files)
 

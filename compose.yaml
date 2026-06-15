@@ -11,5 +11,5 @@ services:
     volumes:
       - ./pgdata:/var/lib/postgresql/data
       # - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-      - ./legal_db_2005.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./legal_db_full.sql:/docker-entrypoint-initdb.d/init.sql
     restart: always
