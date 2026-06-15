@@ -175,29 +175,50 @@ uv run python main.py
 ## 🗄️ DB dump & restore / สำรองและกู้คืนฐานข้อมูล
 
 ```bash
+# --- Open a shell in the DB / เข้าไปใน DB ---
+podman exec -it legal-pgvector psql -U postgres -d legal_db   # exit with \q
+
 # --- Dump / สำรองข้อมูล ---
+# NOTE: do NOT pass -t when redirecting to a file — `podman exec -t` allocates a
+# TTY and rewrites \n -> \r\n, which corrupts the dump. Omit it (as below).
+# หมายเหตุ: อย่าใส่ -t ตอน redirect ลงไฟล์ — `podman exec -t` จะจอง TTY แล้วแปลง \n เป็น \r\n ทำให้ไฟล์เพี้ยน ใช้แบบไม่มี -t (ตามด้านล่าง)
 
-# Whole cluster (all DBs + roles) / สำรองทุกฐานข้อมูล + roles
-podman exec -t legal-pgvector pg_dumpall -U postgres > full_dump.sql
+# Single DB, plain SQL — same format as legal_db_2005.sql / เฉพาะ legal_db เป็น SQL ธรรมดา รูปแบบเดียวกับ legal_db_2005.sql
+podman exec legal-pgvector pg_dump -U postgres -d legal_db > legal_db_latest.sql
 
-# Single DB, plain SQL / สำรองเฉพาะ legal_db เป็น SQL ธรรมดา
-podman exec -t legal-pgvector pg_dump -U postgres -d legal_db > legal_db.sql
+# ...or stamp the filename with today's date / หรือใส่วันที่ในชื่อไฟล์
+podman exec legal-pgvector pg_dump -U postgres -d legal_db > "legal_db_$(date +%Y%m%d).sql"
 
-# Single DB, custom format (compressed, recommended) / สำรองแบบ custom format (บีบอัด แนะนำ)
-podman exec -t legal-pgvector pg_dump -U postgres -d legal_db -Fc > legal_db.dump
+# Single DB, custom format (compressed) / แบบ custom format (บีบอัด)
+podman exec legal-pgvector pg_dump -U postgres -d legal_db -Fc > legal_db.dump
+
+# Whole cluster (all DBs + roles) / ทุกฐานข้อมูล + roles
+podman exec legal-pgvector pg_dumpall -U postgres > full_dump.sql
 
 
 # --- Restore / กู้คืน ---
 
 # From plain SQL / กู้คืนจากไฟล์ SQL
-podman exec -i legal-pgvector psql -U postgres -d legal_db < legal_db.sql
+podman exec -i legal-pgvector psql -U postgres -d legal_db < legal_db_latest.sql
 
 # From custom format / กู้คืนจาก custom format
 podman exec -i legal-pgvector pg_restore -U postgres -d legal_db --clean --if-exists < legal_db.dump
 ```
 
-> ⚠️ `*.sql` is git-ignored. **Do not commit dumps** — they are large and may contain copyrighted court text.
-> ⚠️ ไฟล์ `*.sql` ถูก ignore โดย git อยู่แล้ว **อย่า commit ไฟล์ dump** เพราะไฟล์ใหญ่และอาจมีข้อความคำพิพากษาที่มีลิขสิทธิ์
+### Regenerate the compose seed / สร้าง seed ของ compose ใหม่
+
+`compose.yaml` mounts `legal_db_2005.sql` as the init script, loaded **only when `pgdata/` is empty** (first boot). To refresh that seed from the current DB:
+
+`compose.yaml` mount ไฟล์ `legal_db_2005.sql` เป็น init script ซึ่งจะถูกโหลด **เฉพาะตอน `pgdata/` ว่าง** (บูตครั้งแรก) ถ้าจะอัปเดต seed จากข้อมูลปัจจุบัน:
+
+```bash
+podman exec legal-pgvector pg_dump -U postgres -d legal_db > legal_db_2005.sql
+# To actually reload it / ถ้าจะให้โหลดใหม่จริง:
+podman compose down && rm -rf pgdata && podman compose up -d
+```
+
+> ⚠️ **`*.sql` is NOT git-ignored** — only `documents/`, `documents-tmp/`, `documentssdf/`, `pgdata/`, `*.pyc`, and `.env` are. `legal_db_2005.sql` is committed on purpose (it is the seed). **Don't commit other dumps** (`legal_db_latest.sql`, `full_dump.sql`, `*.dump`) — they are large and may contain copyrighted court text; `git add` them explicitly only if you mean to.
+> ⚠️ **`*.sql` ไม่ได้ถูก git-ignore** — ที่ ignore มีแค่ `documents/`, `documents-tmp/`, `documentssdf/`, `pgdata/`, `*.pyc`, `.env` ส่วน `legal_db_2005.sql` ถูก commit ตั้งใจ (เป็น seed) **อย่า commit dump อื่น** (`legal_db_latest.sql`, `full_dump.sql`, `*.dump`) เพราะไฟล์ใหญ่และอาจมีข้อความคำพิพากษาที่มีลิขสิทธิ์
 
 ---
 
