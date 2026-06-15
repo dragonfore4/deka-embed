@@ -16,6 +16,22 @@ but the GPU sits idle during two phases:
 
 The dominant, easy-to-recover waste is (2): embedding and DB writes never overlap.
 
+## Existing data context (`legal_db_2005.sql`)
+
+`compose.yaml` seeds the DB from `legal_db_2005.sql` — a `pg_dump` that already
+contains the **full corpus embedded**: collection `legal_cases`, 995 distinct
+`case_id`s, 11,742 chunk rows in `langchain_pg_embedding`. So a fresh
+`podman compose up` starts with everything already ingested.
+
+This both motivates and validates the skip-existing feature below:
+- The real `id` format is `<case_id>:<chunk>` (e.g. `deka_718365:0`).
+- `langchain_pg_embedding.cmetadata` is `jsonb` and carries `case_id`, `case_no`,
+  `chunk`, `source` — so the `cmetadata->>'case_id'` query is correct.
+- Re-running ingest against this seeded DB with `skip_existing=True` should skip all
+  995 files. The slow full-embed the user hits is the **wipe-then-reembed** path
+  (reset / changed embedding model) — 11,742 chunks through the GPU — which the
+  concurrency change targets.
+
 ## Goal
 
 Increase throughput of the one-time full ingest (995 files, GPU) by:
@@ -117,8 +133,9 @@ No test suite exists (`AGENTS.md`). Verify by:
 - A dry sanity run on a small subset of `documents/` confirming all batches upsert
   and progress prints correctly.
 - Re-running on the same subset (idempotency) — counts unchanged, no duplicate rows.
-- Re-running with `skip_existing=True` after a partial run — confirms already-ingested
-  files are skipped and only the missing ones are embedded; with `skip_existing=False`
-  all files are re-embedded.
+- Against the DB seeded from `legal_db_2005.sql` (995 case_ids present), running with
+  `skip_existing=True` should report all 995 `./documents/*.pdf` skipped, 0 embedded;
+  with `skip_existing=False` all are re-embedded. This is the most direct check of the
+  skip query since the data is already known.
 - Comparing wall-clock against the sequential version on the same subset to confirm
   the overlap actually reduces time.
