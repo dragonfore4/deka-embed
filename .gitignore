@@ -3,3 +3,6 @@ documents-tmp
 documentssdf
 pgdata
 *.pyc
+
+# Local secrets — use .env.example as the template
+.env

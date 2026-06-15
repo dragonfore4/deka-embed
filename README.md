@@ -229,8 +229,8 @@ podman exec -it legal-pgvector psql -U postgres -d legal_db \
 ├── pyproject.toml       # Python deps / dependency
 ├── uv.lock              # uv lockfile
 ├── .python-version      # Python 3.12
-├── .env                 # Local config / ตั้งค่าเฉพาะเครื่อง
-├── .env.example         # Template for .env / เทมเพลตสำหรับ .env
+├── .env                 # Local config (git-ignored) / ตั้งค่าเฉพาะเครื่อง (ignored)
+├── .env.example         # Template — copy to .env / เทมเพลต คัดลอกเป็น .env
 ├── documents/           # PDF corpus (~995 files, may be nested, git-ignored) / คลังไฟล์ PDF (ซ้อนโฟลเดอร์ได้, ignored)
 ├── pgdata/              # Postgres data volume (git-ignored) / ข้อมูล Postgres (ignored)
 ├── AGENTS.md            # Deeper notes & gotchas for contributors / บันทึกเชิงลึกสำหรับผู้พัฒนา

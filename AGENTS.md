@@ -52,7 +52,7 @@ No tests, no lint/format/typecheck config, no CI. It is a research script — ke
 - **`.gitignore` reality (it lies elsewhere):** it currently ignores only `documents`, `documents-tmp`, `documentssdf`, `pgdata`, `*.pyc`. It does **not** ignore `*.sql` or `.env`.
   - `legal_db_2005.sql` (~174 MB) is **committed on purpose** — it is the seed `compose.yaml` mounts as the DB init script (full embedded corpus: 995 case_ids / 11,742 chunks). Don't delete it casually.
   - Other dumps (`full_dump.sql`, `legal_db.sql`, `*.dump`) should **not** be committed (large / may contain copyrighted court text) — but they are not auto-ignored, so don't `git add .` blindly.
-  - `.env` is currently **tracked** despite docs saying "don't commit `.env`". It holds only localhost `postgres/postgres` creds, but consider gitignoring + untracking it and using `.env.example` instead.
+  - `.env` is **git-ignored and untracked** — it holds only localhost `postgres/postgres` creds. Copy `.env.example` → `.env` to set up locally.
 - `pgdata/` — local Postgres volume, git-ignored.
 - `README.md` is a full bilingual (EN/TH) guide. Keep it in sync with `main.py` (ingest options, reset commands, layout).
 
