@@ -9,6 +9,7 @@ See AGENTS.md for setup, gotchas, and DB-reset commands.
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import List
 from dotenv import load_dotenv
 import psycopg
@@ -262,8 +263,12 @@ if __name__ == "__main__":
 
     # Ingest documents from the documents folder.
     # Uncomment when (re)ingesting; ingestion is idempotent (deterministic IDs).
+    # rglob recurses into subfolders, so docs_dir may hold PDFs directly or be
+    # organized into nested folders (e.g. per-year ./downloads/2564-2565-991/*.pdf).
+    # case_id/id come from the filename only (not the folder), so the layout is
+    # irrelevant as long as filenames are unique across folders.
     docs_dir = "./documents"
-    pdf_files = [f"{docs_dir}/{f}" for f in os.listdir(docs_dir) if f.endswith(".pdf")]
+    pdf_files = sorted(str(p) for p in Path(docs_dir).rglob("*.pdf"))
     bot.ingest_pdfs(pdf_files)
 
     # test_case = "ร่างคดี: นาย ก. ถูกเลิกจ้างโดยไม่เป็นธรรมเนื่องจากบริษัทอ้างว่าผลงานไม่ถึงเกณฑ์ แต่นาย ก. มีหลักฐานการประเมินย้อนหลัง 3 ปีที่อยู่ในระดับดีมาก และไม่เคยได้รับคำเตือนเป็นลายลักษณ์อักษร"
