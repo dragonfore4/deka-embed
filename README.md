@@ -154,35 +154,17 @@ uv run python main.py
 
 ### ⚙️ Ingest options / ตัวเลือกการนำเข้า
 
-`bot.ingest_pdfs(pdf_paths, batch_size=256, max_workers=3, skip_existing=True)`
+`bot.ingest_pdfs(pdf_paths, batch_size=64, max_workers=2, skip_existing=True)`
 
 | Param | Default | EN | TH |
 |---|---|---|---|
-| `batch_size` | `256` | Chunks embedded + upserted per batch. Bigger = fewer Ollama round-trips = faster. | จำนวน chunk ต่อ batch ที่ embed + เขียนลง DB ยิ่งใหญ่ยิ่งเรียก Ollama น้อยรอบ = เร็วขึ้น |
-| `max_workers` | `3` | Concurrent upsert workers. Embedding overlaps DB writes so the GPU stays fed. Keep `<=` PGVector's pool size (5). | จำนวน worker ที่ upsert พร้อมกัน ให้ embedding ทับซ้อนกับการเขียน DB เพื่อไม่ให้ GPU ว่าง ควร `<=` ขนาด pool ของ PGVector (5) |
+| `batch_size` | `64` | Chunks embedded + upserted per batch. | จำนวน chunk ต่อ batch ที่ embed + เขียนลง DB |
+| `max_workers` | `2` | Concurrent upsert workers. Embedding overlaps DB writes so the GPU stays fed. Keep `<=` PGVector's pool size (5). | จำนวน worker ที่ upsert พร้อมกัน ให้ embedding ทับซ้อนกับการเขียน DB เพื่อไม่ให้ GPU ว่าง ควร `<=` ขนาด pool ของ PGVector (5) |
 | `skip_existing` | `True` | Skip PDFs whose `case_id` is already in the store (per-file). Resume a partial run / add new files without re-embedding. Set `False` to re-embed existing files (e.g. after tweaking the cleaner/splitter). | ข้ามไฟล์ที่ `case_id` มีใน DB แล้ว (ระดับไฟล์) ใช้ทำ resume / เพิ่มไฟล์ใหม่โดยไม่ต้อง embed ซ้ำ ตั้งเป็น `False` เมื่ออยาก re-embed ไฟล์เดิม (เช่นหลังแก้ cleaner/splitter) |
 
-**EN** — A failed batch is reported (`[WARN]`) and skipped, not fatal; the run continues and you re-run to retry (idempotent).
+**EN** — A failed batch is reported (`[WARN]`) and skipped, not fatal; the run continues and you re-run to retry (idempotent). Optionally set `OLLAMA_NUM_PARALLEL>=2` on the Ollama server to let two embeds run at once — not required; the embed/DB-write overlap helps even at the default of 1.
 
-**Throughput on large corpora.** Embedding is GPU-bound — for tens of thousands of chunks the real limiter is the embed rate, not the code. Two knobs to push it:
-- `num_ctx` (in `OllamaEmbeddings`, `main.py`) is set to **2048**. Chunks are ~1000 chars, so the model's default 32768 context just wastes VRAM (~5.8 GB/slot → ~1.3 GB at 2048). This frees memory for parallelism and doesn't change the vectors.
-- `OLLAMA_NUM_PARALLEL` (Ollama **server** env, not code) lets multiple embeds run on the GPU at once. With `num_ctx=2048` each slot is small, so on a 32 GB machine `OLLAMA_NUM_PARALLEL=3` + `max_workers=3` (~4–5 GB total) is a safe ~2–3× speedup. Set it, then restart Ollama:
-  ```bash
-  launchctl setenv OLLAMA_NUM_PARALLEL 3   # macOS app: then quit & reopen Ollama
-  # or, if you run the server yourself:
-  OLLAMA_NUM_PARALLEL=3 ollama serve
-  ```
-
-**TH** — ถ้า batch ใด fail จะถูกรายงาน (`[WARN]`) แล้วข้าม ไม่ล้มทั้ง run รันซ้ำเพื่อ retry ได้ (idempotent)
-
-**ความเร็วเมื่อ corpus ใหญ่** — embedding ถูกจำกัดด้วย GPU เป็นหลัก ถ้ามี chunk หลักหมื่น ตัวจำกัดคืออัตรา embed ไม่ใช่โค้ด มี 2 ปุ่มให้เร่ง:
-- `num_ctx` (ใน `OllamaEmbeddings`, `main.py`) ตั้งไว้ **2048** — chunk แค่ ~1000 ตัวอักษร การ์ดเลยไม่ต้องจอง context 32768 ที่เปลือง VRAM (~5.8 GB/slot → ~1.3 GB ที่ 2048) ช่วยให้เหลือ RAM ไป parallel และ**ไม่ทำให้ vector เปลี่ยน**
-- `OLLAMA_NUM_PARALLEL` (env ฝั่ง Ollama **server** ไม่ใช่โค้ด) ให้ embed หลายก้อนพร้อมกันบน GPU เมื่อ `num_ctx=2048` แต่ละ slot เล็ก บนเครื่อง 32 GB ตั้ง `OLLAMA_NUM_PARALLEL=3` + `max_workers=3` (~4–5 GB) เร็วขึ้น ~2–3× อย่างปลอดภัย ตั้งแล้ว restart Ollama:
-  ```bash
-  launchctl setenv OLLAMA_NUM_PARALLEL 3   # Ollama แบบ app บน macOS: แล้วปิด-เปิด Ollama ใหม่
-  # หรือถ้ารัน server เอง:
-  OLLAMA_NUM_PARALLEL=3 ollama serve
-  ```
+**TH** — ถ้า batch ใด fail จะถูกรายงาน (`[WARN]`) แล้วข้าม ไม่ล้มทั้ง run รันซ้ำเพื่อ retry ได้ (idempotent) ถ้าต้องการให้ embed 2 ก้อนพร้อมกันจริง ตั้ง `OLLAMA_NUM_PARALLEL>=2` ฝั่ง Ollama server (ไม่จำเป็น — การ overlap embed/เขียน DB ช่วยอยู่แล้วแม้ค่าเริ่มต้นเป็น 1)
 
 > ⚠️ Caveat: if a document is later re-chunked into **fewer** pieces, the leftover high-index chunks from a previous run are not deleted automatically. For that case, soft-wipe the collection first (see "Resetting" below).
 >
