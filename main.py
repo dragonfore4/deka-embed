@@ -111,7 +111,11 @@ def clean_thai_legal(text: str) -> str:
 class LegalAnalysisBot:
     def __init__(self) -> None:
         # Embeddings: local Ollama, 1024-dim. Run: `ollama pull qwen3-embedding:0.6b`.
-        self.embeddings = OllamaEmbeddings(model="qwen3-embedding:0.6b")
+        # num_ctx=2048 caps the context window: chunks are ~1000 chars (a few hundred
+        # tokens), so the model's default 32768 just wastes VRAM (~5.8 GB/slot). At
+        # 2048 a slot is ~1.3 GB, which leaves room for OLLAMA_NUM_PARALLEL>1. Output
+        # vectors are unchanged (embedding depends on the input, not on num_ctx).
+        self.embeddings = OllamaEmbeddings(model="qwen3-embedding:0.6b", num_ctx=2048)
         # Chat: cloud-proxied via ollama.com. Requires network + Ollama cloud setup.
         self.llm = ChatOllama(model="gemma4:31b-cloud", temperature=0)
         self.vector_store = PGVector(
@@ -124,8 +128,8 @@ class LegalAnalysisBot:
     def ingest_pdfs(
         self,
         pdf_paths: List[str],
-        batch_size: int = 64,
-        max_workers: int = 2,
+        batch_size: int = 256,
+        max_workers: int = 3,
         skip_existing: bool = True,
     ) -> None:
         """Embed and upsert chunks for the given PDFs.
@@ -267,7 +271,7 @@ if __name__ == "__main__":
     # organized into nested folders (e.g. per-year ./downloads/2564-2565-991/*.pdf).
     # case_id/id come from the filename only (not the folder), so the layout is
     # irrelevant as long as filenames are unique across folders.
-    docs_dir = "./documents"
+    docs_dir = "./downloads"
     pdf_files = sorted(str(p) for p in Path(docs_dir).rglob("*.pdf"))
     bot.ingest_pdfs(pdf_files)
 
