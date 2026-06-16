@@ -124,8 +124,10 @@ class LegalAnalysisBot:
     def ingest_pdfs(
         self,
         pdf_paths: List[str],
-        batch_size: int = 64,
-        max_workers: int = 2,
+        # batch_size: int = 64,
+        batch_size: int = 32,
+        # max_workers: int = 2,
+        max_workers: int = 1,
         skip_existing: bool = True,
     ) -> None:
         """Embed and upsert chunks for the given PDFs.
